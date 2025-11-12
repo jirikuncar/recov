@@ -34,7 +34,7 @@ import argparse
 import decimal
 import sys
 from collections import defaultdict
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from coverage import CoverageData, CoverageException
 from coverage.numbits import (
@@ -226,7 +226,7 @@ def extract_coverage_data(
 
 def calculate_redundancy_analysis(
     test_coverage: TestCoverage, source_files: set[str], with_branches: bool
-) -> list[dict[str, Any]]:
+) -> list[TestResult]:
     """
     Perform the three-pass redundancy analysis on coverage data.
 
@@ -408,7 +408,7 @@ def calculate_redundancy_analysis(
 
 
 def format_and_display_results(
-    test_results: list[dict[str, Any]],
+    test_results: list[TestResult],
     test_coverage: TestCoverage,
     source_files: set[str],
     with_branches: bool,
