@@ -31,6 +31,9 @@ Modern software projects often accumulate large test suites, but not all tests c
 - Results show which tests are redundant (their coverage is fully covered by other tests).
 - Remove or refactor redundant tests to optimize your suite and speed up CI/CD.
 
+## Source File Filter
+
+By default, rcov filters source files using a hard-coded substring (`src/recov`). **Update this filter in `src/recov/__init__.py` line 177** to match your project's source path (e.g., `src/yourproject`).
 
 ## Development & Contributing
 

@@ -1,6 +1,6 @@
 [project]
 name = "recov"
-version = "0.1.0"
+version = "0.1.1"
 description = "Analyze test redundancy using coverage data."
 readme = "README.md"
 authors = [
@@ -33,3 +33,9 @@ recov = "recov:main"
 [build-system]
 requires = ["uv_build>=0.9.7,<0.10.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-cov>=7.0.0",
+]

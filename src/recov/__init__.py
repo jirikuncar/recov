@@ -174,7 +174,7 @@ def extract_coverage_data(with_branches: bool = False) -> tuple[list[dict], set[
     )
 
     # Use all coverage data for analysis, but track source vs test coverage separately
-    source_files = {f for f in measured_files if "src/sqlty" in f}
+    source_files = {f for f in measured_files}
     console.print(f"Identified {len(source_files)} source files for redundancy analysis.")
 
     return coverage_list, source_files, has_branches
@@ -205,6 +205,7 @@ def calculate_redundancy_analysis(
             coverage_list[i] = normalized_item
 
     import pyarrow as pa
+    import decimal
 
     if not coverage_list:
         console.print("[yellow]No coverage data to analyze.[/yellow]")
@@ -348,9 +349,20 @@ def calculate_redundancy_analysis(
         union_lines = union_coverage[test_context]["lines"]
         union_arcs = union_coverage[test_context]["arcs"]
 
-        # Calculate overlap percentages
-        lines_overlap = len(test_lines & union_lines) / len(test_lines) * 100 if test_lines else 0.0
-        arcs_overlap = len(test_arcs & union_arcs) / len(test_arcs) * 100 if test_arcs else 0.0
+        # Calculate overlap percentages using Decimal for accuracy
+        if test_lines:
+            overlap_count = decimal.Decimal(len(test_lines & union_lines))
+            total_count = decimal.Decimal(len(test_lines))
+            lines_overlap = (overlap_count / total_count * decimal.Decimal(100)).quantize(decimal.Decimal("0.01"))
+        else:
+            lines_overlap = decimal.Decimal("0.00")
+
+        if test_arcs:
+            overlap_count = decimal.Decimal(len(test_arcs & union_arcs))
+            total_count = decimal.Decimal(len(test_arcs))
+            arcs_overlap = (overlap_count / total_count * decimal.Decimal(100)).quantize(decimal.Decimal("0.01"))
+        else:
+            arcs_overlap = decimal.Decimal("0.00")
 
         # A test is redundant if its coverage is completely covered by other tests
         lines_redundant = not test_lines or test_lines.issubset(union_lines)
