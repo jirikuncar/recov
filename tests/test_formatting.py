@@ -1,4 +1,5 @@
 from recov import format_and_display_results
+from coverage.numbits import nums_to_numbits
 
 
 def test_formatting_demo():
@@ -10,7 +11,7 @@ def test_formatting_demo():
             "arcs_overlap": 0.00,
             "is_redundant": False,
             "total_covered_items": 10,
-            "source_lines": {("src/recov/foo.py", 1), ("src/recov/foo.py", 2)},
+            "source_lines": {"src/recov/foo.py": nums_to_numbits([1, 2])},
             "source_arcs": set(),
         },
         {
@@ -19,17 +20,17 @@ def test_formatting_demo():
             "arcs_overlap": 100.00,
             "is_redundant": True,
             "total_covered_items": 5,
-            "source_lines": {("src/recov/foo.py", 3)},
+            "source_lines": {"src/recov/foo.py": nums_to_numbits([3])},
             "source_arcs": set(),
         },
     ]
     test_coverage = {
         "test_unique": {
-            "lines": {("src/recov/foo.py", 1), ("src/recov/foo.py", 2)},
+            "lines": {"src/recov/foo.py": nums_to_numbits([1, 2])},
             "arcs": set(),
         },
         "test_redundant": {
-            "lines": {("src/recov/foo.py", 3)},
+            "lines": {"src/recov/foo.py": nums_to_numbits([3])},
             "arcs": set(),
         },
     }
@@ -39,5 +40,5 @@ def test_formatting_demo():
         test_coverage,
         source_files,
         with_branches=False,
-        verbose=True,
+        verbose=False,
     )

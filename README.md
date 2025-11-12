@@ -9,7 +9,6 @@ Modern software projects often accumulate large test suites, but not all tests c
 
 ## Features
 - Detects redundant tests using coverage data (lines and branches)
-- Fast, in-memory analysis with DuckDB and PyArrow
 - Rich terminal output for easy review
 - Works with pytest-cov and Coverage.py
 - CLI and Python API
