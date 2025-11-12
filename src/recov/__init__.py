@@ -31,8 +31,10 @@ Prerequisites:
 """
 
 import argparse
+import decimal
 import sys
 from collections import defaultdict
+from typing import Any, TypedDict
 
 from coverage import CoverageData, CoverageException
 from coverage.numbits import (
@@ -41,6 +43,36 @@ from coverage.numbits import (
     numbits_intersection,
     numbits_to_nums,
 )
+
+
+class TestContextCoverage(TypedDict):
+    """Coverage data for a single test context."""
+
+    lines: dict[str, bytes]
+    arcs: set[tuple[str, int, int]]
+
+
+class TestSourceCoverage(TypedDict):
+    """Coverage data for a single test context, filtered to source files."""
+
+    lines: dict[str, bytes]
+    arcs: set[tuple[str, int, int]]
+
+
+class TestResult(TypedDict):
+    """Result of redundancy analysis for a single test."""
+
+    test: str
+    lines_overlap: decimal.Decimal
+    arcs_overlap: decimal.Decimal
+    is_redundant: bool
+    total_covered_items: int
+    source_lines: dict[str, bytes]
+    source_arcs: set[tuple[str, int, int]]
+
+
+# Type aliases
+TestCoverage = dict[str, TestContextCoverage]
 
 try:
     from rich.console import Console
@@ -52,7 +84,7 @@ except ImportError:
 
 def extract_coverage_data(
     with_branches: bool = False,
-) -> tuple[dict, set[str], bool]:
+) -> tuple[TestCoverage, set[str], bool]:
     """
     Extract coverage data from .coverage file and prepare it for analysis.
 
@@ -106,7 +138,9 @@ def extract_coverage_data(
     # --- 2. TRANSFORM (Convert data to a queryable format) ---
     # Build test coverage data structure directly
     # Structure: {context: {"lines": {file: numbits}, "arcs": set of (file, fromno, tono)}}
-    test_coverage = defaultdict(lambda: {"lines": {}, "arcs": set()})
+    test_coverage: TestCoverage = defaultdict(
+        lambda: TestContextCoverage(lines={}, arcs=set())
+    )
 
     try:
         import sqlite3
@@ -140,28 +174,28 @@ def extract_coverage_data(
     # Process lines data
     for filename, numbits, context_name in lines_data:
         clean_context = context_name.split("|")[0] if context_name else "global"
-        existing = test_coverage[clean_context]["lines"].get(filename, b"")
+        existing = test_coverage[clean_context]["lines"].get(filename, b"")  # type: ignore
         if existing:
-            test_coverage[clean_context]["lines"][filename] = numbits_union(
+            test_coverage[clean_context]["lines"][filename] = numbits_union(  # type: ignore
                 existing, numbits
             )
         else:
-            test_coverage[clean_context]["lines"][filename] = numbits
+            test_coverage[clean_context]["lines"][filename] = numbits  # type: ignore
 
     # Process arcs data
     for filename, fromno, tono, context_name in arcs_data:
         clean_context = context_name.split("|")[0] if context_name else "global"
-        test_coverage[clean_context]["arcs"].add((filename, fromno, tono))
+        test_coverage[clean_context]["arcs"].add((filename, fromno, tono))  # type: ignore
 
     # Infer lines from arcs for files that don't have line_bits
     files_with_line_bits = {filename for filename, _, _ in lines_data}
     for filename in measured_files:
         if filename not in files_with_line_bits:
             # Infer lines from arcs
-            lines_by_context = defaultdict(set)
+            lines_by_context: dict[str, set[int]] = defaultdict(set)
             arcs_for_file = []
             for context in test_coverage:
-                for arc in test_coverage[context]["arcs"]:
+                for arc in test_coverage[context]["arcs"]:  # type: ignore
                     if arc[0] == filename:
                         arcs_for_file.append((context, arc[1], arc[2]))
             for context, fromno, tono in arcs_for_file:
@@ -172,7 +206,7 @@ def extract_coverage_data(
             for context, lines in lines_by_context.items():
                 if lines:
                     numbits = nums_to_numbits(sorted(lines))
-                    test_coverage[context]["lines"][filename] = numbits
+                    test_coverage[context]["lines"][filename] = numbits  # type: ignore
 
     if not test_coverage:
         console.print("[red]No context data available in .coverage file.[/red]")
@@ -191,16 +225,14 @@ def extract_coverage_data(
 
 
 def calculate_redundancy_analysis(
-    test_coverage: dict, source_files: set[str], with_branches: bool
-) -> list[dict]:
+    test_coverage: TestCoverage, source_files: set[str], with_branches: bool
+) -> list[dict[str, Any]]:
     """
     Perform the three-pass redundancy analysis on coverage data.
 
     Returns:
         list: test_results with redundancy analysis data
     """
-    import decimal
-
     console = Console()
 
     # --- 3. ANALYZE (Three-pass redundancy detection) ---
@@ -216,17 +248,17 @@ def calculate_redundancy_analysis(
     console.print(f"Found {len(test_contexts)} test contexts to analyze.")
 
     # Build test_source_coverage (filtered to source files)
-    test_source_coverage = {}
+    test_source_coverage: dict[str, TestSourceCoverage] = {}
     for ctx in test_contexts:
         test_source_coverage[ctx] = {
             "lines": {
                 file: numbits
-                for file, numbits in test_coverage[ctx]["lines"].items()
+                for file, numbits in test_coverage[ctx]["lines"].items()  # type: ignore
                 if file in source_files
             },
             "arcs": {
                 (file, fr, to)
-                for file, fr, to in test_coverage[ctx]["arcs"]
+                for file, fr, to in test_coverage[ctx]["arcs"]  # type: ignore
                 if file in source_files
             },
         }
@@ -241,8 +273,10 @@ def calculate_redundancy_analysis(
     n = len(sorted_contexts)
 
     # Prefix unions: prefix_numbits[file][i] = union of test_source_coverage[sorted_contexts[0]] to sorted_contexts[i-1] for that file
-    prefix_numbits = defaultdict(lambda: [b""] * (n + 1))
-    prefix_arcs = [set()] * (n + 1) if with_branches else None
+    prefix_numbits: dict[str, list[bytes]] = defaultdict(lambda: [b""] * (n + 1))
+    prefix_arcs: list[set[tuple[str, int, int]]] = (
+        [set() for _ in range(n + 1)] if with_branches else []
+    )
 
     for i in range(1, n + 1):
         current_lines = test_source_coverage[sorted_contexts[i - 1]]["lines"]
@@ -256,8 +290,10 @@ def calculate_redundancy_analysis(
             prefix_arcs[i] = prev_union_arcs | current_arcs
 
     # Suffix unions: suffix_numbits[file][i] = union of test_source_coverage[sorted_contexts[i]] to sorted_contexts[n-1] for that file
-    suffix_numbits = defaultdict(lambda: [b""] * (n + 1))
-    suffix_arcs = [set()] * (n + 1) if with_branches else None
+    suffix_numbits: dict[str, list[bytes]] = defaultdict(lambda: [b""] * (n + 1))
+    suffix_arcs: list[set[tuple[str, int, int]]] = (
+        [set() for _ in range(n + 1)] if with_branches else []
+    )
     for file in prefix_numbits:
         suffix_numbits[file][n] = b""
     if with_branches:
@@ -275,7 +311,7 @@ def calculate_redundancy_analysis(
             suffix_arcs[i] = current_arcs | next_union_arcs
 
     # Now compute union_coverage using prefix and suffix
-    union_coverage = {}
+    union_coverage: dict[str, TestSourceCoverage] = {}
     for idx, test_context in enumerate(sorted_contexts):
         union_lines = {}
         for file in prefix_numbits:
@@ -295,7 +331,7 @@ def calculate_redundancy_analysis(
     # PASS 3: Calculate overlap (%) of coverage
     console.print("Pass 3: Calculating redundancy overlap percentages...")
 
-    test_results = []
+    test_results: list[TestResult] = []
 
     for test_context in test_contexts:
         test_lines = test_source_coverage[test_context]["lines"]
@@ -349,9 +385,9 @@ def calculate_redundancy_analysis(
         # Total covered items (lines + arcs, including test files)
         total_lines = sum(
             len(numbits_to_nums(numbits))
-            for numbits in test_coverage[test_context]["lines"].values()
+            for numbits in test_coverage[test_context]["lines"].values()  # type: ignore
         )
-        total_arcs = len(test_coverage[test_context]["arcs"])
+        total_arcs = len(test_coverage[test_context]["arcs"])  # type: ignore
         total_covered_items = total_lines + total_arcs
 
         test_results.append(
@@ -372,8 +408,8 @@ def calculate_redundancy_analysis(
 
 
 def format_and_display_results(
-    test_results: list[dict],
-    test_coverage: dict,
+    test_results: list[dict[str, Any]],
+    test_coverage: TestCoverage,
     source_files: set[str],
     with_branches: bool,
     verbose: bool,
@@ -435,7 +471,7 @@ def format_and_display_results(
         )
 
     # Coverage summary
-    all_lines = set()
+    all_lines: set[tuple[str, int]] = set()
     for result in test_results:
         for file, numbits in result["source_lines"].items():
             all_lines.update((file, line) for line in numbits_to_nums(numbits))
@@ -500,7 +536,7 @@ def format_and_display_results(
 
             if with_branches and result["source_arcs"]:
                 console.print("  [blue]Source files (branches):[/blue]")
-                arcs_by_file = {}
+                arcs_by_file: dict[str, list[tuple[int, int]]] = {}
                 for file, from_line, to_line in result["source_arcs"]:
                     if file not in arcs_by_file:
                         arcs_by_file[file] = []
@@ -512,8 +548,8 @@ def format_and_display_results(
                     console.print(f"    {file}: {', '.join(arc_strs)}")
 
             # Show test/other file coverage
-            test_lines = set()
-            for f, numbits in test_coverage[test_context]["lines"].items():
+            test_lines: set[tuple[str, int]] = set()
+            for f, numbits in test_coverage[test_context]["lines"].items():  # type: ignore
                 if f not in source_files:
                     test_lines.update(
                         (f, line_num) for line_num in numbits_to_nums(numbits)
@@ -521,7 +557,7 @@ def format_and_display_results(
             test_arcs = (
                 {
                     (f, fr, to)
-                    for f, fr, to in test_coverage[test_context]["arcs"]
+                    for f, fr, to in test_coverage[test_context]["arcs"]  # type: ignore
                     if f not in source_files
                 }
                 if with_branches
@@ -530,7 +566,7 @@ def format_and_display_results(
 
             if test_lines:
                 console.print("  [blue]Test/other files (lines):[/blue]")
-                lines_by_file = {}
+                lines_by_file: dict[str, list[int]] = {}
                 for file, line in test_lines:
                     if file not in lines_by_file:
                         lines_by_file[file] = []
@@ -587,7 +623,7 @@ def analyze_coverage_for_redundancy(
 
     # Perform redundancy analysis
     test_results = calculate_redundancy_analysis(
-        test_coverage, source_files, with_branches
+        test_coverage, source_files, with_branches & has_branches
     )
     if not test_results:
         return
