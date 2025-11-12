@@ -1,6 +1,6 @@
 [project]
 name = "recov"
-version = "0.1.1"
+version = "0.1.2"
 description = "Analyze test redundancy using coverage data."
 readme = "README.md"
 authors = [

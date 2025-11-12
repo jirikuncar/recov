@@ -1,5 +1,6 @@
 from recov import format_and_display_results
 
+
 def test_formatting_demo():
     # Minimal mock data for demonstration
     test_results = [
