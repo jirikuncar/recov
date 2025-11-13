@@ -1,10 +1,17 @@
 [project]
 name = "recov"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Analyze test redundancy using coverage data."
 readme = "README.md"
+requires-python = ">=3.12"
+license = {file = "LICENSE"}
 authors = [
-    { name = "Jiri Kuncar", email = "jiri.kuncar@gmail.com" }
+    {name = "Jiri Kuncar", email = "jiri.kuncar@gmail.com"},
+]
+keywords = [
+    "test",
+    "coverage",
+    "static-analysis",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -20,18 +27,20 @@ classifiers = [
     "Topic :: Utilities",
     "Typing :: Typed",
 ]
-requires-python = ">=3.12"
 dependencies = [
   "coverage",
   "rich",
 ]
 
+[project.urls]
+Homepage = "https://github.com/jirikuncar/recov"
+Documentation = "https://github.com/jirikuncar/recov#readme"
+Repository = "https://github.com/jirikuncar/recov"
+Changelog = "https://github.com/jirikuncar/recov/releases"
+Issues = "https://github.com/jirikuncar/recov/issues"
+
 [project.scripts]
 recov = "recov:main"
-
-[build-system]
-requires = ["uv_build>=0.9.7,<0.10.0"]
-build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
@@ -40,3 +49,84 @@ dev = [
     "mypy>=1.8.0",
     "pyright>=1.1.0",
 ]
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/recov"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "/src",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
+]
+
+[tool.uv-dynamic-versioning]
+fallback-version = "0.2.0"
+
+[tool.pytest.ini_options]
+addopts = [
+    "--cov=src",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "-v",
+]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_any_generics = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+ignore_missing_imports = false
+
+[[tool.mypy.overrides]]
+module = "coverage.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "rich.*"
+ignore_missing_imports = true
+
+[tool.ty.environment]
+# Python version will be inferred from requires-python
+root = ["./src"]
+
+[tool.ty.src]
+include = ["src"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "SIM102", # nested if statements (can be more readable)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
