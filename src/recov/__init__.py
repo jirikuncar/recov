@@ -429,17 +429,16 @@ def format_and_display_results(
     analysis_type = "Lines + Branches" if with_branches else "Lines Only"
     table = Table(title=f"All Tests (Sorted by Redundancy Status) - {analysis_type}")
     table.add_column("Test", style="cyan")
-    table.add_column("Covered Items", style="magenta")
-    table.add_column("Lines Overlap %", style="yellow")
+    table.add_column("Covered Items", style="magenta", justify="right")
+    table.add_column("Lines Overlap %", style="yellow", justify="right")
     if with_branches:
-        table.add_column("Arcs Overlap %", style="yellow")
+        table.add_column("Arcs Overlap %", style="yellow", justify="right")
     table.add_column(
         "Status",
         style="red" if any(r["is_redundant"] for r in test_results) else "green",
     )
 
     for result in test_results:
-        status = "REDUNDANT" if result["is_redundant"] else "UNIQUE"
         row_data = [
             result["test"],
             str(result["total_covered_items"]),
@@ -449,6 +448,8 @@ def format_and_display_results(
             row_data.append(
                 f"{result['arcs_overlap']:.1f}%" if result["source_arcs"] else "N/A"
             )
+
+        status = "[bold red]REDUNDANT[/bold red]" if result["is_redundant"] else "[green]UNIQUE[/green]"
         row_data.append(status)
         table.add_row(*row_data)
 
