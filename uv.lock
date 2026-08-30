@@ -252,6 +252,12 @@ dependencies = [
     { name = "rich" },
 ]
 
+[package.optional-dependencies]
+pytest = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
@@ -263,8 +269,11 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "coverage" },
+    { name = "pytest", marker = "extra == 'pytest'", specifier = ">=7.0" },
+    { name = "pytest-cov", marker = "extra == 'pytest'", specifier = ">=4.0" },
     { name = "rich" },
 ]
+provides-extras = ["pytest"]
 
 [package.metadata.requires-dev]
 dev = [

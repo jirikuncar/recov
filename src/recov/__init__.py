@@ -25,9 +25,20 @@ Examples:
     # Verbose with branches
     uvx recov -v --with-branches
 
+    # Analyze the contexts nested one level inside each test
+    uvx recov --context-depth 2
+
 Prerequisites:
-    - Run pytest with coverage: pytest --cov=src --cov-context=test --cov-branch --cov-append
+    - Run pytest with coverage:
+      pytest --cov=src --cov-branch --recov-context=test
     - Ensure .coverage file exists in current directory
+
+``--recov-context=test`` comes from the pytest plugin in
+:mod:`recov.pytest_plugin`. It replaces ``--cov-context=test`` and fixes two
+ways a single-process run loses per-test attribution: coverage's ``sysmon``
+core (the default on CPython 3.14+) records each line only once per process,
+and flat contexts let a context started inside a test hide the test. See
+:mod:`recov.contexts` for the details.
 """
 
 import argparse
@@ -44,6 +55,33 @@ from coverage.numbits import (
 )
 from rich.console import Console
 from rich.table import Table
+
+from recov.contexts import (
+    CoverageContextStack,
+    context,
+    display_context,
+    stack,
+    truncate_context,
+)
+
+__all__ = [
+    "DEFAULT_CONTEXT_DEPTH",
+    "CoverageContextStack",
+    "analysis_context",
+    "analyze_coverage_for_redundancy",
+    "calculate_redundancy_analysis",
+    "context",
+    "display_context",
+    "extract_coverage_data",
+    "format_and_display_results",
+    "main",
+    "stack",
+    "truncate_context",
+    "warn_if_contexts_look_lossy",
+]
+
+#: How many frames of a nested context identify a "test" during analysis.
+DEFAULT_CONTEXT_DEPTH = 1
 
 
 class TestContextCoverage(TypedDict):
@@ -76,11 +114,30 @@ class TestResult(TypedDict):
 TestCoverage = dict[str, TestContextCoverage]
 
 
+def analysis_context(context_name: str | None, depth: int) -> str:
+    """Map a recorded context name onto the context analysis works with.
+
+    Contexts recorded by :mod:`recov.pytest_plugin` carry the whole nesting
+    stack, so a line executed inside ``test ▸ request ▸ retry`` is rolled up
+    into ``test`` at `depth` 1 and into ``test ▸ request`` at `depth` 2. The
+    phase suffix (``setup`` / ``run`` / ``teardown``) is always dropped, so
+    the phases of one test merge together, and flat ``pytest-cov`` contexts
+    keep behaving exactly as before.
+    """
+    if not context_name:
+        return "global"
+    return truncate_context(context_name, depth) or "global"
+
+
 def extract_coverage_data(
     with_branches: bool = False,
+    context_depth: int = DEFAULT_CONTEXT_DEPTH,
 ) -> tuple[TestCoverage, set[str], bool]:
     """
     Extract coverage data from .coverage file and prepare it for analysis.
+
+    `context_depth` selects how many frames of a nested context identify a
+    test; 0 keeps the full nesting.
 
     Returns:
         tuple: (coverage_list, source_files, has_branches)
@@ -153,7 +210,7 @@ def extract_coverage_data(
 
         # Process lines data
         for filename, numbits, context_name in lines_data:
-            clean_context = context_name.split("|")[0] if context_name else "global"
+            clean_context = analysis_context(context_name, context_depth)
             existing = test_coverage[clean_context]["lines"].get(filename, b"")
             if existing:
                 test_coverage[clean_context]["lines"][filename] = numbits_union(existing, numbits)
@@ -162,7 +219,7 @@ def extract_coverage_data(
 
         # Process arcs data
         for filename, fromno, tono, context_name in arcs_data:
-            clean_context = context_name.split("|")[0] if context_name else "global"
+            clean_context = analysis_context(context_name, context_depth)
             test_coverage[clean_context]["arcs"].add((filename, fromno, tono))
 
         # Infer lines from arcs for files that don't have line_bits
@@ -389,7 +446,7 @@ def format_and_display_results(
 
     for result in test_results:
         row_data = [
-            result["test"],
+            display_context(result["test"]),
             str(result["total_covered_items"]),
             f"{result['lines_overlap']:.1f}%" if result["source_lines"] else "N/A",
         ]
@@ -413,7 +470,7 @@ def format_and_display_results(
         )
         for result in test_results:
             if result["is_redundant"]:
-                console.print(f"  • {result['test']}")
+                console.print(f"  • {display_context(result['test'])}")
     else:
         console.print("\n[green]✓ No redundant tests found![/green]")
         console.print(
@@ -442,7 +499,7 @@ def format_and_display_results(
         console.print("\n[bold cyan]=== Detailed Coverage per Test ===[/bold cyan]")
         for result in test_results:
             test_context = result["test"]
-            console.print(f"\n[bold]{test_context}[/bold]")
+            console.print(f"\n[bold]{display_context(test_context)}[/bold]")
             console.print(f"  Status: {'REDUNDANT' if result['is_redundant'] else 'UNIQUE'}")
             console.print(f"  Lines overlap: {result['lines_overlap']:.1f}%")
             if with_branches:
@@ -548,14 +605,62 @@ def format_and_display_results(
                     console.print(f"    {file}: {', '.join(arc_strs)}")
 
 
-def analyze_coverage_for_redundancy(verbose: bool = False, with_branches: bool = False) -> None:
+def warn_if_contexts_look_lossy(test_results: list[TestResult]) -> None:
+    """Point out coverage data that looks like it lost per-test contexts.
+
+    When coverage runs on the ``sysmon`` core it disables a line's monitoring
+    after the first hit, so a line is recorded for whichever test happened to
+    run it first and for no other test. The tell-tale signature is that no two
+    tests share a single line, which practically never happens in a real suite.
+    """
+    if len(test_results) < 2:
+        return
+
+    per_test_lines = 0
+    all_lines: set[tuple[str, int]] = set()
+    for result in test_results:
+        for file, numbits in result["source_lines"].items():
+            nums = numbits_to_nums(numbits)
+            per_test_lines += len(nums)
+            all_lines.update((file, line) for line in nums)
+
+    if not all_lines or per_test_lines != len(all_lines):
+        return
+
+    console = Console()
+    console.print(
+        "\n[yellow]⚠ No line is covered by more than one test, across "
+        f"{len(test_results)} tests.[/yellow]"
+    )
+    console.print(
+        "[yellow]  That is the signature of coverage's 'sysmon' core (the default on "
+        "CPython 3.14+),[/yellow]"
+    )
+    console.print(
+        "[yellow]  which records each line only once per process and ignores coverage "
+        "contexts.[/yellow]"
+    )
+    console.print(
+        "[yellow]  Re-collect with:  pytest --cov=src --cov-branch --recov-context=test[/yellow]"
+    )
+
+
+def analyze_coverage_for_redundancy(
+    verbose: bool = False,
+    with_branches: bool = False,
+    context_depth: int = DEFAULT_CONTEXT_DEPTH,
+) -> None:
     """
     Reads the .coverage database, performs redundancy analysis, and prints redundant tests.
 
     This is the implementation of the "bitmap" and "NlogN" set-difference algorithm.
+
+    `context_depth` chooses the granularity of the analysis when nested
+    contexts were recorded: 1 compares whole tests, 2 compares the sub-contexts
+    nested directly inside them, and 0 compares the innermost contexts.
     """
     # Extract coverage data
-    test_coverage, source_files, has_branches = extract_coverage_data(with_branches)
+    test_coverage, source_files, has_branches = extract_coverage_data(with_branches, context_depth)
     if not test_coverage:
         return
 
@@ -568,6 +673,7 @@ def analyze_coverage_for_redundancy(verbose: bool = False, with_branches: bool =
 
     # Format and display results
     format_and_display_results(test_results, test_coverage, source_files, with_branches, verbose)
+    warn_if_contexts_look_lossy(test_results)
 
 
 def main() -> None:
@@ -596,6 +702,22 @@ Examples:
         action="store_true",
         help="Require branch coverage analysis (fails if branches not available)",
     )
+    parser.add_argument(
+        "--context-depth",
+        type=int,
+        default=DEFAULT_CONTEXT_DEPTH,
+        metavar="N",
+        help=(
+            "How many frames of a nested coverage context identify a test "
+            "(default: 1, i.e. one context per test). Use 2 or more to analyze "
+            "the sub-contexts nested inside each test, or 0 for the innermost "
+            "context recorded."
+        ),
+    )
 
     args = parser.parse_args()
-    analyze_coverage_for_redundancy(verbose=args.verbose, with_branches=args.with_branches)
+    analyze_coverage_for_redundancy(
+        verbose=args.verbose,
+        with_branches=args.with_branches,
+        context_depth=args.context_depth,
+    )

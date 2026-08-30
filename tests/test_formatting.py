@@ -1,6 +1,6 @@
 from coverage.numbits import nums_to_numbits
 
-from recov import format_and_display_results
+from recov import format_and_display_results, warn_if_contexts_look_lossy
 
 
 def test_formatting_demo():
@@ -43,3 +43,41 @@ def test_formatting_demo():
         with_branches=False,
         verbose=False,
     )
+
+
+def _result(test, lines):
+    return {
+        "test": test,
+        "lines_overlap": 0.0,
+        "arcs_overlap": 0.0,
+        "is_redundant": False,
+        "total_covered_items": len(lines),
+        "source_lines": {"src/recov/foo.py": nums_to_numbits(lines)},
+        "source_arcs": set(),
+    }
+
+
+def test_lossy_hint_when_no_line_is_shared(capsys):
+    """Zero sharing across many tests is the sysmon signature -- say so."""
+    warn_if_contexts_look_lossy([_result("test_a", [1, 2]), _result("test_b", [3, 4])])
+    assert "sysmon" in capsys.readouterr().out
+
+
+def test_no_lossy_hint_when_tests_share_lines(capsys):
+    warn_if_contexts_look_lossy([_result("test_a", [1, 2]), _result("test_b", [2, 3])])
+    assert capsys.readouterr().out == ""
+
+
+def test_no_lossy_hint_for_a_single_test(capsys):
+    warn_if_contexts_look_lossy([_result("test_a", [1, 2])])
+    assert capsys.readouterr().out == ""
+
+
+def test_no_lossy_hint_without_coverage(capsys):
+    warn_if_contexts_look_lossy(
+        [
+            {**_result("test_a", []), "source_lines": {}},
+            {**_result("test_b", []), "source_lines": {}},
+        ]
+    )
+    assert capsys.readouterr().out == ""

@@ -32,6 +32,12 @@ dependencies = [
   "rich",
 ]
 
+[project.optional-dependencies]
+pytest = [
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/jirikuncar/recov"
 Documentation = "https://github.com/jirikuncar/recov#readme"
@@ -41,6 +47,9 @@ Issues = "https://github.com/jirikuncar/recov/issues"
 
 [project.scripts]
 recov = "recov:main"
+
+[project.entry-points.pytest11]
+recov = "recov.pytest_plugin"
 
 [dependency-groups]
 dev = [
