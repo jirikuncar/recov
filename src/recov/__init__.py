@@ -44,6 +44,7 @@ and flat contexts let a context started inside a test hide the test. See
 import argparse
 import decimal
 from collections import defaultdict
+from collections.abc import Collection
 from typing import TypedDict
 
 from coverage import CoverageData, CoverageException
@@ -57,8 +58,10 @@ from rich.console import Console
 from rich.table import Table
 
 from recov.contexts import (
+    PHASES,
     CoverageContextStack,
     context,
+    decode_context,
     display_context,
     stack,
     truncate_context,
@@ -66,6 +69,8 @@ from recov.contexts import (
 
 __all__ = [
     "DEFAULT_CONTEXT_DEPTH",
+    "GLOBAL_CONTEXT",
+    "PHASES",
     "CoverageContextStack",
     "analysis_context",
     "analyze_coverage_for_redundancy",
@@ -75,6 +80,8 @@ __all__ = [
     "extract_coverage_data",
     "format_and_display_results",
     "main",
+    "parse_phases",
+    "source_only",
     "stack",
     "truncate_context",
     "warn_if_contexts_look_lossy",
@@ -82,6 +89,10 @@ __all__ = [
 
 #: How many frames of a nested context identify a "test" during analysis.
 DEFAULT_CONTEXT_DEPTH = 1
+
+#: Bucket for coverage that belongs to no selected test: imports and anything
+#: else measured outside a test context, plus the phases ``--phases`` excludes.
+GLOBAL_CONTEXT = "global"
 
 
 class TestContextCoverage(TypedDict):
@@ -114,30 +125,47 @@ class TestResult(TypedDict):
 TestCoverage = dict[str, TestContextCoverage]
 
 
-def analysis_context(context_name: str | None, depth: int) -> str:
+def analysis_context(
+    context_name: str | None,
+    depth: int,
+    phases: Collection[str] | None = None,
+) -> str:
     """Map a recorded context name onto the context analysis works with.
 
     Contexts recorded by :mod:`recov.pytest_plugin` carry the whole nesting
     stack, so a line executed inside ``test ▸ request ▸ retry`` is rolled up
     into ``test`` at `depth` 1 and into ``test ▸ request`` at `depth` 2. The
-    phase suffix (``setup`` / ``run`` / ``teardown``) is always dropped, so
-    the phases of one test merge together, and flat ``pytest-cov`` contexts
-    keep behaving exactly as before.
+    phase suffix is always dropped from the result, so the selected phases of
+    one test merge together, and flat ``pytest-cov`` contexts keep behaving
+    exactly as before.
+
+    `phases` restricts which pytest phases count towards a test:
+    ``{"run"}`` attributes only what a test body executed, leaving fixture
+    setup and teardown in :data:`GLOBAL_CONTEXT`. Contexts carrying no phase
+    at all are always kept -- there is nothing to filter them on, and dropping
+    them would silently discard data not collected through pytest.
     """
     if not context_name:
-        return "global"
-    return truncate_context(context_name, depth) or "global"
+        return GLOBAL_CONTEXT
+    if phases is not None:
+        _frames, phase = decode_context(context_name)
+        if phase is not None and phase not in phases:
+            return GLOBAL_CONTEXT
+    return truncate_context(context_name, depth) or GLOBAL_CONTEXT
 
 
 def extract_coverage_data(
     with_branches: bool = False,
     context_depth: int = DEFAULT_CONTEXT_DEPTH,
+    phases: Collection[str] | None = None,
 ) -> tuple[TestCoverage, set[str], bool]:
     """
     Extract coverage data from .coverage file and prepare it for analysis.
 
     `context_depth` selects how many frames of a nested context identify a
-    test; 0 keeps the full nesting.
+    test; 0 keeps the full nesting. `phases` restricts which pytest phases
+    count towards a test (see :func:`analysis_context`); everything it
+    excludes lands in :data:`GLOBAL_CONTEXT`.
 
     Returns:
         tuple: (coverage_list, source_files, has_branches)
@@ -210,7 +238,7 @@ def extract_coverage_data(
 
         # Process lines data
         for filename, numbits, context_name in lines_data:
-            clean_context = analysis_context(context_name, context_depth)
+            clean_context = analysis_context(context_name, context_depth, phases)
             existing = test_coverage[clean_context]["lines"].get(filename, b"")
             if existing:
                 test_coverage[clean_context]["lines"][filename] = numbits_union(existing, numbits)
@@ -219,8 +247,20 @@ def extract_coverage_data(
 
         # Process arcs data
         for filename, fromno, tono, context_name in arcs_data:
-            clean_context = analysis_context(context_name, context_depth)
+            clean_context = analysis_context(context_name, context_depth, phases)
             test_coverage[clean_context]["arcs"].add((filename, fromno, tono))
+
+        # A test whose every row was filtered out by `phases` still ran, and a
+        # test body that covers nothing new is the headline result of
+        # `--phases run`. Register it with empty coverage so it is reported
+        # rather than silently missing.
+        if phases is not None:
+            recorded = {name for _f, _n, name in lines_data}
+            recorded.update(name for _f, _fr, _to, name in arcs_data)
+            for context_name in recorded:
+                owner = analysis_context(context_name, context_depth)
+                if owner != GLOBAL_CONTEXT:
+                    test_coverage.setdefault(owner, TestContextCoverage(lines={}, arcs=set()))
 
         # Infer lines from arcs for files that don't have line_bits
         files_with_line_bits = {filename for filename, _, _ in lines_data}
@@ -251,11 +291,33 @@ def extract_coverage_data(
         return test_coverage, measured_files, has_branches
 
 
+def source_only(coverage: TestContextCoverage, source_files: set[str]) -> TestSourceCoverage:
+    """Narrow one context's coverage to the measured source files."""
+    return {
+        "lines": {
+            file: numbits for file, numbits in coverage["lines"].items() if file in source_files
+        },
+        "arcs": {(file, fr, to) for file, fr, to in coverage["arcs"] if file in source_files},
+    }
+
+
+EMPTY_COVERAGE: TestContextCoverage = {"lines": {}, "arcs": set()}
+
+
 def calculate_redundancy_analysis(
-    test_coverage: TestCoverage, source_files: set[str], with_branches: bool
+    test_coverage: TestCoverage,
+    source_files: set[str],
+    with_branches: bool,
+    use_baseline: bool = True,
 ) -> list[TestResult]:
     """
     Perform the redundancy analysis on coverage data.
+
+    When `use_baseline` is set, coverage in :data:`GLOBAL_CONTEXT` -- imports,
+    and the phases ``--phases`` excluded -- counts as already covered for every
+    test. That is what keeps ``--phases run`` honest: a line a fixture set up
+    is still covered once the test is deleted, so it must not make the test
+    look unique.
 
     Returns:
         list: test_results with redundancy analysis data
@@ -263,7 +325,7 @@ def calculate_redundancy_analysis(
     console = Console()
 
     # Get all unique test contexts
-    test_contexts = [ctx for ctx in test_coverage if ctx != "global"]
+    test_contexts = [ctx for ctx in test_coverage if ctx != GLOBAL_CONTEXT]
 
     if not test_contexts:
         console.print("[yellow]No test-specific coverage contexts found.[/yellow]")
@@ -271,20 +333,13 @@ def calculate_redundancy_analysis(
         return []
 
     # Build test_source_coverage (filtered to source files)
-    test_source_coverage: dict[str, TestSourceCoverage] = {}
-    for ctx in test_contexts:
-        test_source_coverage[ctx] = {
-            "lines": {
-                file: numbits
-                for file, numbits in test_coverage[ctx]["lines"].items()
-                if file in source_files
-            },
-            "arcs": {
-                (file, fr, to)
-                for file, fr, to in test_coverage[ctx]["arcs"]
-                if file in source_files
-            },
-        }
+    test_source_coverage: dict[str, TestSourceCoverage] = {
+        ctx: source_only(test_coverage[ctx], source_files) for ctx in test_contexts
+    }
+    baseline = source_only(
+        test_coverage.get(GLOBAL_CONTEXT, EMPTY_COVERAGE) if use_baseline else EMPTY_COVERAGE,
+        source_files,
+    )
 
     # For each test, calculate union coverage of all other tests except that one
     with console.status(
@@ -294,35 +349,47 @@ def calculate_redundancy_analysis(
         sorted_contexts = sorted(test_contexts)
         n = len(sorted_contexts)
 
+        # Every file any context touches. A context that does not touch a file
+        # must still carry the running union of that file forward, otherwise
+        # the union "loses" files between the contexts that cover them.
+        files = set(baseline["lines"])
+        for coverage in test_source_coverage.values():
+            files.update(coverage["lines"])
+
         # Prefix unions: prefix_numbits[file][i] = union of test_source_coverage[sorted_contexts[0]] to sorted_contexts[i-1] for that file
-        prefix_numbits: dict[str, list[bytes]] = defaultdict(lambda: [b""] * (n + 1))
+        prefix_numbits: dict[str, list[bytes]] = {file: [b""] * (n + 1) for file in files}
         prefix_arcs: list[set[tuple[str, int, int]]] = (
             [set() for _ in range(n + 1)] if with_branches else []
         )
 
+        # Seeding index 0 with the baseline is enough for it to reach every
+        # union, because prefix[i] is built on top of prefix[i - 1].
+        for file, numbits in baseline["lines"].items():
+            prefix_numbits[file][0] = numbits
+        if with_branches:
+            prefix_arcs[0] = set(baseline["arcs"])
+
         for i in range(1, n + 1):
             current_lines = test_source_coverage[sorted_contexts[i - 1]]["lines"]
-            for file, numbits in current_lines.items():
-                prefix_numbits[file][i] = numbits_union(prefix_numbits[file][i - 1], numbits)
+            for file, prefix in prefix_numbits.items():
+                current = current_lines.get(file)
+                prefix[i] = numbits_union(prefix[i - 1], current) if current else prefix[i - 1]
             if with_branches:
                 prev_union_arcs = prefix_arcs[i - 1]
                 current_arcs = test_source_coverage[sorted_contexts[i - 1]]["arcs"]
                 prefix_arcs[i] = prev_union_arcs | current_arcs
 
         # Suffix unions: suffix_numbits[file][i] = union of test_source_coverage[sorted_contexts[i]] to sorted_contexts[n-1] for that file
-        suffix_numbits: dict[str, list[bytes]] = defaultdict(lambda: [b""] * (n + 1))
+        suffix_numbits: dict[str, list[bytes]] = {file: [b""] * (n + 1) for file in files}
         suffix_arcs: list[set[tuple[str, int, int]]] = (
             [set() for _ in range(n + 1)] if with_branches else []
         )
-        for file in prefix_numbits:
-            suffix_numbits[file][n] = b""
-        if with_branches:
-            suffix_arcs[n] = set()
 
         for i in range(n - 1, -1, -1):
             current_lines = test_source_coverage[sorted_contexts[i]]["lines"]
-            for file, numbits in current_lines.items():
-                suffix_numbits[file][i] = numbits_union(numbits, suffix_numbits[file][i + 1])
+            for file, suffix in suffix_numbits.items():
+                current = current_lines.get(file)
+                suffix[i] = numbits_union(current, suffix[i + 1]) if current else suffix[i + 1]
             if with_branches:
                 next_union_arcs = suffix_arcs[i + 1]
                 current_arcs = test_source_coverage[sorted_contexts[i]]["arcs"]
@@ -331,11 +398,10 @@ def calculate_redundancy_analysis(
         # Now compute union_coverage using prefix and suffix
         union_coverage: dict[str, TestSourceCoverage] = {}
         for idx, test_context in enumerate(sorted_contexts):
-            union_lines = {}
-            for file in prefix_numbits:
-                union_lines[file] = numbits_union(
-                    prefix_numbits[file][idx], suffix_numbits[file][idx + 1]
-                )
+            union_lines = {
+                file: numbits_union(prefix[idx], suffix_numbits[file][idx + 1])
+                for file, prefix in prefix_numbits.items()
+            }
             union_arcs = (prefix_arcs[idx] | suffix_arcs[idx + 1]) if with_branches else set()
             union_coverage[test_context] = {
                 "lines": union_lines,
@@ -488,9 +554,23 @@ def format_and_display_results(
         if with_branches
         else 0
     )
+    # Lines covered outside the analyzed tests: imports, and any phase the
+    # analysis excluded. They are covered, but no test is credited with them.
+    baseline = source_only(test_coverage.get(GLOBAL_CONTEXT, EMPTY_COVERAGE), source_files)
+    baseline_lines = {
+        (file, line)
+        for file, numbits in baseline["lines"].items()
+        for line in numbits_to_nums(numbits)
+    }
+
     console.print("\n[bold]Coverage Summary:[/bold]")
     console.print(f"• Total tests analyzed: {len(test_results)}")
     console.print(f"• Total lines covered: {total_lines_covered}")
+    if baseline_lines:
+        console.print(
+            f"• Lines covered outside the analyzed tests: {len(baseline_lines - all_lines)} "
+            "(imports and excluded phases)"
+        )
     if with_branches:
         console.print(f"• Total arcs covered: {total_arcs_covered}")
     console.print(f"• Redundant tests: {redundant_count}")
@@ -605,15 +685,31 @@ def format_and_display_results(
                     console.print(f"    {file}: {', '.join(arc_strs)}")
 
 
-def warn_if_contexts_look_lossy(test_results: list[TestResult]) -> None:
+def parse_phases(value: str) -> frozenset[str]:
+    """Parse the ``--phases`` argument into a set of pytest phase names."""
+    phases = frozenset(part.strip() for part in value.split(",") if part.strip())
+    unknown = phases - PHASES
+    if unknown or not phases:
+        raise argparse.ArgumentTypeError(
+            f"expected a comma-separated subset of {', '.join(sorted(PHASES))}, got {value!r}"
+        )
+    return phases
+
+
+def warn_if_contexts_look_lossy(
+    test_results: list[TestResult], phases_filtered: bool = False
+) -> None:
     """Point out coverage data that looks like it lost per-test contexts.
 
     When coverage runs on the ``sysmon`` core it disables a line's monitoring
     after the first hit, so a line is recorded for whichever test happened to
     run it first and for no other test. The tell-tale signature is that no two
     tests share a single line, which practically never happens in a real suite.
+
+    Skipped when `phases_filtered`, because narrowing the phases is itself a
+    plausible reason for tests to stop sharing lines.
     """
-    if len(test_results) < 2:
+    if phases_filtered or len(test_results) < 2:
         return
 
     per_test_lines = 0
@@ -649,6 +745,8 @@ def analyze_coverage_for_redundancy(
     verbose: bool = False,
     with_branches: bool = False,
     context_depth: int = DEFAULT_CONTEXT_DEPTH,
+    phases: Collection[str] | None = None,
+    use_baseline: bool = True,
 ) -> None:
     """
     Reads the .coverage database, performs redundancy analysis, and prints redundant tests.
@@ -658,22 +756,28 @@ def analyze_coverage_for_redundancy(
     `context_depth` chooses the granularity of the analysis when nested
     contexts were recorded: 1 compares whole tests, 2 compares the sub-contexts
     nested directly inside them, and 0 compares the innermost contexts.
+
+    `phases` chooses which pytest phases count towards a test -- ``{"run"}``
+    to measure test bodies without their fixtures -- and `use_baseline` keeps
+    everything they exclude counting as covered.
     """
     # Extract coverage data
-    test_coverage, source_files, has_branches = extract_coverage_data(with_branches, context_depth)
+    test_coverage, source_files, has_branches = extract_coverage_data(
+        with_branches, context_depth, phases
+    )
     if not test_coverage:
         return
 
     # Perform redundancy analysis
     test_results = calculate_redundancy_analysis(
-        test_coverage, source_files, with_branches & has_branches
+        test_coverage, source_files, with_branches & has_branches, use_baseline
     )
     if not test_results:
         return
 
     # Format and display results
     format_and_display_results(test_results, test_coverage, source_files, with_branches, verbose)
-    warn_if_contexts_look_lossy(test_results)
+    warn_if_contexts_look_lossy(test_results, phases_filtered=phases is not None)
 
 
 def main() -> None:
@@ -715,9 +819,34 @@ Examples:
         ),
     )
 
+    parser.add_argument(
+        "--phases",
+        type=parse_phases,
+        default=None,
+        metavar="PHASES",
+        help=(
+            "Comma-separated pytest phases that count towards a test: any of "
+            f"{', '.join(sorted(PHASES))} (default: all of them). Use "
+            "'--phases run' to measure what test bodies executed without "
+            "their fixture setup and teardown; the excluded phases still "
+            "count as covered, so nothing is reported as a coverage gap."
+        ),
+    )
+    parser.add_argument(
+        "--no-baseline",
+        dest="use_baseline",
+        action="store_false",
+        help=(
+            "Do not count coverage recorded outside the analyzed tests "
+            "(imports, and the phases --phases excluded) as already covered."
+        ),
+    )
+
     args = parser.parse_args()
     analyze_coverage_for_redundancy(
         verbose=args.verbose,
         with_branches=args.with_branches,
         context_depth=args.context_depth,
+        phases=args.phases,
+        use_baseline=args.use_baseline,
     )

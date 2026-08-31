@@ -110,9 +110,53 @@ with recov.context("cache warm"):
     warm_the_cache()
 ```
 
+## Reporting only what test bodies ran
+
+Coverage collected during a test's fixtures is recorded under `…|setup` and
+`…|teardown`, and the test body's under `…|run`. By default all three count
+towards the test. `--phases run` credits a test with only what its own body
+executed:
+
+```bash
+recov --phases run
+```
+
+A test that only reaches a line through a fixture then shows up with nothing
+of its own:
+
+```
+┃ Test                    ┃ Covered Items ┃ Lines Overlap % ┃ Status    ┃
+│ tests/test_a.py::test_a │             5 │            0.0% │ UNIQUE    │
+│ tests/test_b.py::test_b │             0 │             N/A │ REDUNDANT │
+```
+
+Tests whose every row was filtered out stay in the report rather than
+disappearing — a test body that covers nothing new is the result you were
+looking for.
+
+Coverage that belongs to no selected test — imports, and the phases you
+excluded — becomes the **baseline**. It still counts as covered, so:
+
+- nothing is reported as a coverage gap just because a fixture covered it, and
+- a test is not called unique for a line its own fixture covered.
+
+The summary reports it separately:
+
+```
+• Total lines covered: 2
+• Lines covered outside the analyzed tests: 6 (imports and excluded phases)
+```
+
+Pass `--no-baseline` to ignore that coverage entirely instead.
+
 ## Usage
 
 - By default, `recov` analyzes line coverage. Use `--with-branches` to require branch coverage.
+- `--phases run` (or any comma-separated subset of `setup,run,teardown`,
+  default: all) chooses which pytest phases count towards a test. Contexts
+  carrying no phase at all are always kept.
+- `--no-baseline` stops coverage recorded outside the analyzed tests from
+  counting as already covered.
 - `--context-depth N` chooses the granularity of the analysis when nested
   contexts were recorded. `1` (the default) compares whole tests, `2` compares
   the sub-contexts nested directly inside each test, and `0` compares the
@@ -143,7 +187,8 @@ with recov.context("test_a"):
 
 - Lines that only run at **import time** are recorded against the global
   context, because they execute during collection, before any test starts. No
-  test is credited with them.
+  test is credited with them — they are counted as baseline coverage instead,
+  so they never show up as a gap.
 - Results memoized by the code under test (`functools.lru_cache`, module-level
   singletons) are computed once, so only the test that ran first is credited —
   that is a true record of what executed, not a coverage defect.

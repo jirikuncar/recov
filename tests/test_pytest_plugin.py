@@ -11,7 +11,7 @@ import sys
 import pytest
 from coverage.numbits import numbits_to_nums
 
-from recov import extract_coverage_data
+from recov import GLOBAL_CONTEXT, extract_coverage_data
 from recov.contexts import FRAME_SEPARATOR, display_context
 
 US = FRAME_SEPARATOR
@@ -42,6 +42,21 @@ def test_b():
     assert shared(2) == 3
 """
 
+CONFTEST = """
+import pytest
+from lib import only_in_a
+
+
+@pytest.fixture
+def prepared():
+    return only_in_a()
+"""
+
+TEST_D = """
+def test_d(prepared):
+    assert prepared == "a"
+"""
+
 TEST_C = """
 import pytest
 from lib import shared, only_in_a
@@ -58,13 +73,15 @@ def test_c(recov_context):
 
 @pytest.fixture
 def project(tmp_path):
-    """A three-test project where all three tests execute ``shared()``."""
+    """Three tests executing ``shared()``, plus one that only uses a fixture."""
     (tmp_path / "lib.py").write_text(SOURCE)
     tests = tmp_path / "tests"
     tests.mkdir()
     (tests / "test_a.py").write_text(TEST_A)
     (tests / "test_b.py").write_text(TEST_B)
     (tests / "test_c.py").write_text(TEST_C)
+    (tests / "conftest.py").write_text(CONFTEST)
+    (tests / "test_d.py").write_text(TEST_D)
     return tmp_path
 
 
@@ -97,20 +114,22 @@ def run_pytest(project, *args, env_extra=None):
     )
 
 
-def lines_by_context(monkeypatch, project, *, context_depth=1):
+def lines_by_context(monkeypatch, project, *, context_depth=1, phases=None):
+    """Lines of ``lib.py`` per context, including contexts that covered none."""
     monkeypatch.chdir(project)
     test_coverage, source_files, _has_branches = extract_coverage_data(
-        with_branches=False, context_depth=context_depth
+        with_branches=False, context_depth=context_depth, phases=phases
     )
     lib = next(path for path in source_files if path.endswith("lib.py"))
     return {
-        ctx: set(numbits_to_nums(data["lines"][lib]))
+        ctx: set(numbits_to_nums(data["lines"].get(lib, b"")))
         for ctx, data in test_coverage.items()
-        if lib in data["lines"]
+        if ctx != GLOBAL_CONTEXT
     }
 
 
 SHARED_LINE = 3  # the body of shared()
+ONLY_LINE = 7  # the body of only_in_a()
 
 sysmon_only = pytest.mark.skipif(
     not hasattr(sys, "monitoring"),
@@ -164,6 +183,24 @@ def test_takes_over_from_pytest_cov_contexts(project, monkeypatch):
         ctx for ctx, lines in lines_by_context(monkeypatch, project).items() if SHARED_LINE in lines
     }
     assert len(runners) == 3
+
+
+def test_phases_run_leaves_out_fixture_setup(project, monkeypatch):
+    """--phases run credits a test with what its body ran, not its fixtures."""
+    result = run_pytest(project, "--recov-context=test")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    every_phase = lines_by_context(monkeypatch, project)
+    run_only = lines_by_context(monkeypatch, project, phases={"run"})
+
+    # test_d only reaches only_in_a() through its fixture...
+    assert ONLY_LINE in every_phase["tests/test_d.py::test_d"]
+    # ...so with --phases run it is credited with nothing at all, and stays
+    # visible rather than dropping out of the report.
+    assert run_only["tests/test_d.py::test_d"] == set()
+
+    # A test body that really does run the line keeps it.
+    assert run_only["tests/test_a.py::test_a"] == {SHARED_LINE, ONLY_LINE}
 
 
 def test_flat_pytest_cov_contexts_still_work(project, monkeypatch):
