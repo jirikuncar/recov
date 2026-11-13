@@ -21,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Programming Language :: SQL",
     "Topic :: Software Development :: Testing",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -72,6 +73,7 @@ only-include = [
 fallback-version = "0.2.0"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 addopts = [
     "--cov=src",
     "--cov-report=term-missing",
@@ -80,7 +82,7 @@ addopts = [
 ]
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -108,7 +110,7 @@ root = ["./src"]
 include = ["src"]
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
