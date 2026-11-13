@@ -5,6 +5,7 @@ Functions:
 - fizzbuzz_tag(n: int) -> str: returns 'fizzbuzz' / 'fizz' / 'buzz' / str(n)
 """
 
+
 def classify_number(n: int) -> str:
     """Classify an integer by sign and parity.
 
