@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "examples-reporting"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/math_func.py"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--cov=src/",
+    "--cov-report=term-missing",
+    "--cov-append",
+    "--cov-branch",
+    "--cov-context=test",
+    "-v",
+]
+
+[tool.uv.sources]
+recov = { path = "../../" }
+
+[dependency-groups]
+dev = [
+    "recov",
+    "pytest",
+    "pytest-cov",
+]

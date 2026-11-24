@@ -15,5 +15,5 @@ htmlcov/
 .coverage.*
 coverage.xml
 
-# pytest cache
-.pytest_cache/
+# cache directories
+.*_cache/
